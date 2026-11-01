@@ -1,0 +1,343 @@
+{
+  "name": "AI Lead Qualification to HubSpot CRM",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lead-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ae7a9517-f4c0-45c5-a4a0-597ddb8984a5",
+      "name": "Lead Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        112
+      ],
+      "webhookId": "lead-intake-demo"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_HUBSPOT_TOKEN"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'llama-3.3-70b-versatile', response_format: { type: 'json_object' }, messages: [ { role: 'system', content: 'You are a lead qualification assistant for an AI automation agency. Analyse the lead and reply ONLY with JSON: {\"score\": number 0-100, \"category\": \"hot\"|\"warm\"|\"cold\", \"summary\": \"2 line summary\", \"next_action\": \"recommended next step\"}. Hot = clear need, budget or urgency.' }, { role: 'user', content: JSON.stringify($json.body) } ] }) }}",
+        "options": {}
+      },
+      "id": "bff3ad76-b037-4cc9-a7c6-7cde2f153ab3",
+      "name": "Gemini Qualify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        224,
+        112
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst lead = $('Lead Webhook').first().json.body;\n\nconst text = (\n  (lead.message || '') + ' ' +\n  (lead.company || '')\n).toLowerCase();\n\nlet score = 20;\n\nconst urgent = [\n  'urgent', 'asap', 'this month',\n  'this week', 'immediately', 'start now'\n];\n\nconst budget = [\n  'budget', 'ready to pay',\n  'invest', 'approved'\n];\n\nconst need = [\n  'voice', 'ai agent', 'automation',\n  'crm', 'chatbot', 'sales team', 'integration'\n];\n\nif (urgent.some(k => text.includes(k))) score += 30;\nif (budget.some(k => text.includes(k))) score += 30;\nif (need.some(k => text.includes(k))) score += 15;\nif (lead.phone) score += 5;\nif (lead.company) score += 5;\n\nscore = Math.min(score, 100);\n\nconst category =\n  score >= 70 ? 'hot' :\n  score >= 40 ? 'warm' : 'cold';\n\nconst summary =\n  'Rule-based score ' + score +\n  '/100. Message: ' +\n  (lead.message || 'n/a').slice(0, 120);\n\nconst next_action =\n  category === 'hot'\n    ? 'Call within 24 hours'\n    : category === 'warm'\n    ? 'Send intro email and case study'\n    : 'Add to nurture list';\n\nreturn [{\n  json: {\n    ...lead,\n    score,\n    category,\n    summary,\n    next_action\n  }\n}];\n\n"
+      },
+      "id": "b5baab0e-1d4e-4e48-9b43-bfc9d9ce1a7a",
+      "name": "Parse AI Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/contacts/batch/upsert",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_HUBSPOT_TOKEN"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"inputs\": [\n    {\n      \"id\": \"{{ $('Parse AI Result').first().json.email }}\",\n      \"idProperty\": \"email\",\n      \"properties\": {\n        \"email\": \"{{ $('Parse AI Result').first().json.email }}\",\n        \"firstname\": \"{{ $('Parse AI Result').first().json.name.split(' ')[0] }}\",\n        \"lastname\": \"{{ $('Parse AI Result').first().json.name.split(' ').slice(1).join(' ') }}\",\n        \"phone\": \"{{ $('Parse AI Result').first().json.phone }}\",\n        \"company\": \"{{ $('Parse AI Result').first().json.company }}\",\n        \"hs_lead_status\": \"IN_PROGRESS\",\n        \"ai_score\": \"{{ $('Parse AI Result').first().json.score }}\",\n        \"ai_category\": \"{{ $('Parse AI Result').first().json.category.charAt(0).toUpperCase() + $('Parse AI Result').first().json.category.slice(1) }}\"\n      }\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "a2449827-6368-4b5a-bcc0-8daf3a50a0f7",
+      "name": "Upsert Contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/notes",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_HUBSPOT_TOKEN"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ ({\n  properties: {\n    hs_timestamp: Date.now(),\n    hs_note_body: 'AI Lead Score: ' + $('Parse AI Result').first().json.score +\n      '/100 (' + $('Parse AI Result').first().json.category +\n      ') | Summary: ' + $('Parse AI Result').first().json.summary +\n      ' | Next action: ' + $('Parse AI Result').first().json.next_action\n  },\n  associations: [\n    {\n      to: {\n        id: '581609607869'\n      },\n      types: [\n        {\n          associationCategory: 'HUBSPOT_DEFINED',\n          associationTypeId: 202\n        }\n      ]\n    }\n  ]\n}) }}",
+        "options": {}
+      },
+      "id": "5f975369-c2b6-4b60-b2e9-21013e85ed8c",
+      "name": "Add AI Note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $('Parse AI Result').first().json.category }}",
+              "rightValue": "hot",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "7a1cbf81-b5df-4386-9154-b290ceb366b6",
+      "name": "Is Hot Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1104,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.hubapi.com/crm/v3/objects/deals",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_HUBSPOT_TOKEN"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ ({\n  properties: {\n    dealname: $('Parse AI Result').first().json.company + ' - AI Hot Lead',\n    pipeline: 'default',\n    dealstage: 'appointmentscheduled',\n    description:\n      'AI Lead Score: ' + $('Parse AI Result').first().json.score +\n      '/100 (' + $('Parse AI Result').first().json.category +\n      ') | Summary: ' + $('Parse AI Result').first().json.summary +\n      ' | Next action: ' + $('Parse AI Result').first().json.next_action\n  }\n}) }}",
+        "options": {}
+      },
+      "id": "de4b963e-3306-4733-8bf1-77c2481c486d",
+      "name": "Create Deal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1328,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({status:'ok', score:$('Parse AI Result').first().json.score, category:$('Parse AI Result').first().json.category}) }}",
+        "options": {}
+      },
+      "id": "895d50a8-94e3-4e68-af15-2c4ba3ecb9db",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1824,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "https://api.hubapi.com/crm/v4/objects/deals/360699800303/associations/contacts/581609607869",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type\t",
+              "value": "application/json"
+            },
+            {
+              "name": "Authorization\t",
+              "value": "Bearer YOUR_HUBSPOT_TOKEN"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "[\n  {\n    \"associationCategory\": \"HUBSPOT_DEFINED\",\n    \"associationTypeId\": 3\n  }\n]",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1552,
+        32
+      ],
+      "id": "fade8ae1-ecf3-4443-b078-6d555ca08285",
+      "name": "Associate Deal to Contact"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Lead Webhook": {
+      "main": [
+        [
+          {
+            "node": "Gemini Qualify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Qualify": {
+      "main": [
+        [
+          {
+            "node": "Parse AI Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse AI Result": {
+      "main": [
+        [
+          {
+            "node": "Upsert Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Contact": {
+      "main": [
+        [
+          {
+            "node": "Add AI Note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add AI Note": {
+      "main": [
+        [
+          {
+            "node": "Is Hot Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Hot Lead?": {
+      "main": [
+        [
+          {
+            "node": "Create Deal",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Deal": {
+      "main": [
+        [
+          {
+            "node": "Associate Deal to Contact",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Associate Deal to Contact": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "09c8c344-de78-42c8-9c21-0729ea2cd565",
+  "meta": {
+    "instanceId": "fd5cdf3200de3331e15ab43526ca70dccb53e6c70020292e4fe36c2ab13d0b7d"
+  },
+  "nodeGroups": [],
+  "id": "NS2EWeWoiOPUj60G",
+  "tags": []
+}
